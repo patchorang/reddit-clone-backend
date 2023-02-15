@@ -6,6 +6,8 @@ import { startStandaloneServer } from "@apollo/server/standalone";
 import mongoose from "mongoose";
 import Post from "./models/post.js";
 import User from "./models/user.js";
+import Comment from "./models/comment.js";
+import Subreddit from "./models/subreddit.js";
 import jwt from "jsonwebtoken";
 
 const MONGODB_URI = process.env.MONGO_URI;
@@ -20,20 +22,27 @@ mongoose
   });
 
 const typeDefs = `#graphql
+
+  type Subreddit {
+    id: ID!,
+    name: String!,
+    description: String
+  }
+
   type Post {
     title: String!
     body: String
     subreddit: String!
-    numUpvotes: Int!
-    numDownvotes: Int!
+    upVotedBy: [ID]
+    downVotedBy: [ID]
     id: ID!
+    comments: [Comment]
   }
 
   type User {
     username: String!
     posts: [Post]
-    upvotes: [Post]
-    downvotes: [Post]
+    subreddits: [Subreddit]
     id: ID!
   }
 
@@ -41,79 +50,212 @@ const typeDefs = `#graphql
     value: String!
   }
 
-  type Query {
-    me: User
+  type Comment {
+    body: String!
+    parentPost: ID!
+    upVotedBy: [ID]
+    downVotedBy: [ID]
+    parentComment: ID
+    id: ID!
+    edited: Boolean
   }
 
   type Query {
-    posts: [Post]
+    me: User
+    user(userId: ID): User
+    posts(subreddit: String): [Post]
+    post(id: ID!): Post
+    subreddit(name: String): Subreddit
   }
-  
+
+  # Post mutations
   type Mutation {
     createPost(
       title: String!
       body: String
       subreddit: String!
     ): Post
-  }
-
-  type Mutation {
     downvotePost (
       id: ID!
     ): Post
-  }
-
-  type Mutation {
     upvotePost (
       id: ID!
     ): Post
   }
 
+  # Comment mutations
+  type Mutation {
+    createComment(
+      body: String
+      parentPost: ID!
+      parentComment: ID
+    ): Comment
+    editComment(
+      body: String!
+      id: ID!
+    ): Comment
+    # downvoteComment (
+    #   id: ID!
+    # ): Comment
+    # upvoteComment (
+    #   id: ID!
+    # ): Comment
+  }
+
+  # User mutations
   type Mutation {
     createUser(
       username: String!
     ): User
-
     login(
       username: String!
       password: String!
     ): Token
+    joinSubreddit(name: String!): User
+    leaveSubreddit(name: String!): User
   }
 `;
 
 const resolvers = {
   Query: {
-    posts: async () => {
+    posts: async (root, args) => {
+      if (args.subreddit && args.subreddit !== "all") {
+        return Post.find({ subreddit: args.subreddit });
+      }
       return Post.find({});
+    },
+    post: async (root, args) => {
+      return Post.findById(args.id);
     },
     me: (root, args, context) => {
       return context.currentUser;
     },
+    user: async (root, args) => {
+      if (args.userId) {
+        return User.findById(args.userId);
+      }
+      return null;
+    },
+    subreddit: async (root, args) => {
+      if (args.name) {
+        return Subreddit.findOne({ name: args.name });
+      }
+      return null;
+    },
+  },
+
+  Post: {
+    comments: async (root) => {
+      const comments = await Comment.find({ parentPost: root.id });
+      return comments;
+    },
+  },
+
+  User: {
+    subreddits: async (root) => {
+      const user = await User.findById(root.id)
+        .select("subreddits")
+        .populate("subreddits");
+      return user.subreddits;
+    },
+    posts: async (root) => {
+      const user = await User.findById(root.id)
+        .select("posts")
+        .populate("posts");
+      return user.posts;
+    },
   },
 
   Mutation: {
+    createComment: async (root, args, context) => {
+      // const currentUser = context.currentUser;
+      // if (!currentUser) {
+      //   throw new Error("not authorized");
+      // }
+
+      const comment = new Comment({
+        ...args,
+        upVotedBy: [], // add currentUser.id back in
+        upVotedBy: [],
+      });
+      // const user = await User.findById(currentUser.id).populate("comments");
+      const newComment = await comment.save();
+      // user.comments = user.comments.concat(newComment.id);
+      // user.save();
+      return newComment;
+    },
+    editComment: async (root, args) => {
+      let commentToEdit = await Comment.findById(args.id);
+      if (!commentToEdit) {
+        throw new Error("Comment not found");
+      }
+      commentToEdit.body = args.body;
+      commentToEdit.edited = true;
+      return commentToEdit.save();
+    },
     createPost: async (root, args, context) => {
       const currentUser = context.currentUser;
       if (!currentUser) {
         throw new Error("not authorized");
       }
-      const post = new Post({ ...args, numUpvotes: 1, numDownvotes: 0 });
-      const user = await User.findById(context.currentUser.id).populate(
-        "posts"
-      );
+      const post = new Post({
+        ...args,
+        upVotedBy: [currentUser.id],
+        upVotedBy: [],
+      });
+      const user = await User.findById(currentUser.id).populate("posts");
       const newPost = await post.save();
       user.posts = user.posts.concat(newPost.id);
       user.save();
       return newPost;
     },
-    downvotePost: async (root, args) => {
+    downvotePost: async (root, args, context) => {
+      const currentUserId = context.currentUser.id;
       const post = await Post.findById(args.id);
-      post.numDownvotes = post.numDownvotes + 1;
+      const alreadyDownVoted = post.downVotedBy.find(
+        (p) => p.toString() === currentUserId
+      );
+
+      // if already up downvoted, remove the downvote and continue
+      if (alreadyDownVoted) {
+        post.downVotedBy = post.downVotedBy.filter((p) => {
+          return p.toString() !== currentUserId;
+        });
+        return post.save();
+      }
+
+      // if not already downvoted, add the downvote and remove any upvote
+      post.downVotedBy = post.downVotedBy.concat(currentUserId);
+
+      //remove downvote by this user
+      post.upVotedBy = post.upVotedBy.filter((p) => {
+        return p.toString() !== currentUserId;
+      });
       return post.save();
     },
-    upvotePost: async (root, args) => {
+    upvotePost: async (root, args, context) => {
+      const currentUserId = context.currentUser.id;
       const post = await Post.findById(args.id);
-      post.numUpvotes = post.numUpvotes + 1;
+      const alreadyUpvoted = post.upVotedBy.find(
+        (p) => p.toString() === currentUserId
+      );
+
+      // if already up voted, remove the upvote and continue
+      if (alreadyUpvoted) {
+        post.upVotedBy = post.upVotedBy.filter((p) => {
+          return p.toString() !== currentUserId;
+        });
+        return post.save();
+      }
+
+      // if not already upvoted, add the upvote and remove any downvote
+      post.upVotedBy = post.upVotedBy.concat(currentUserId);
+
+      //remove downvote by this user
+      post.downVotedBy = post.downVotedBy.filter((p) => {
+        return p.toString() !== currentUserId;
+      });
+
       return post.save();
     },
     createUser: async (root, args) => {
@@ -125,7 +267,7 @@ const resolvers = {
     login: async (root, args) => {
       const user = await User.findOne({ username: args.username });
       if (!user || args.password !== "secret") {
-        throw new UserInputError("Wrong creds");
+        throw new Error("Wrong creds");
       }
 
       const userForToken = {
@@ -134,6 +276,24 @@ const resolvers = {
       };
 
       return { value: jwt.sign(userForToken, "SECRET") };
+    },
+    joinSubreddit: async (root, args, context) => {
+      const currentUserId = context.currentUser.id;
+      const subreddit = await Subreddit.findOne({ name: args.name });
+      const user = await User.findById(currentUserId);
+      if (user.subreddits.indexOf(subreddit.id.toString())) {
+        user.subreddits = user.subreddits.concat(subreddit.id.toString());
+      }
+      return user.save();
+    },
+    leaveSubreddit: async (root, args, context) => {
+      const currentUserId = context.currentUser.id;
+      const subreddit = await Subreddit.findOne({ name: args.name });
+      const user = await User.findById(currentUserId);
+      user.subreddits = user.subreddits.filter(
+        (s) => s.toString() !== subreddit.id
+      );
+      return user.save();
     },
   },
 };

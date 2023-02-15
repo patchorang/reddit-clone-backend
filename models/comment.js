@@ -1,22 +1,28 @@
 import mongoose from "mongoose";
 
-const postSchema = new mongoose.Schema({
-  title: {
+const commentSchema = new mongoose.Schema({
+  body: {
     type: String,
     required: true,
   },
-  body: {
-    type: String,
-  },
-  subreddit: {
-    type: String,
+  parentPost: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Post",
     required: true,
   },
   upVotedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   downVotedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  parentComment: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Comment",
+  },
+  edited: {
+    type: Boolean,
+    default: false,
+  },
 });
 
-postSchema.set("toJSON", {
+commentSchema.set("toJSON", {
   transform: (document, returnedObject) => {
     returnedObject.id = returnedObject._id.toString();
     delete returnedObject._id;
@@ -24,6 +30,6 @@ postSchema.set("toJSON", {
   },
 });
 
-const model = mongoose.model("Post", postSchema);
+const model = mongoose.model("Comment", commentSchema);
 export const schema = model.schema;
 export default model;

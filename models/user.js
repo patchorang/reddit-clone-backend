@@ -5,9 +5,9 @@ const schema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  subreddits: [{ type: mongoose.Schema.Types.ObjectId, ref: "Subreddit" }],
   posts: [{ type: mongoose.Schema.Types.ObjectId, ref: "Post" }],
-  upvotes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Post" }],
-  downvotes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Post" }],
+  // comments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Comment" }],
 });
 
 export default mongoose.model("User", schema);
